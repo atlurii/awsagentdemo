@@ -1,56 +1,14 @@
-# ./generated/ec2/main.tf
-# Managed by Terraform – EC2 / ALB stack for web-portal
+# Generated EC2 configuration for web-portal
+# Environment: production
 
-###############################################################################
-# Data sources
-###############################################################################
-
-data "aws_vpc" "main" {
-  tags = {
-    Name = "main-vpc"
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
   }
 }
-
-data "aws_subnets" "public" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.main.id]
-  }
-
-  tags = {
-    Tier = "public"
-  }
-}
-
-data "aws_subnets" "private" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.main.id]
-  }
-
-  tags = {
-    Tier = "private"
-  }
-}
-
-data "aws_ami" "amazon_linux_2" {
-  most_recent = true
-  owners      = ["amazon"]
-
-  filter {
-    name   = "name"
-    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-}
-
-###############################################################################
-# Local values
-###############################################################################
 
 locals {
   common_tags = {
@@ -77,9 +35,49 @@ locals {
   }
 }
 
-###############################################################################
-# Security Groups
-###############################################################################
+data "aws_vpc" "main" {
+  filter {
+    name   = "tag:Name"
+    values = ["main-vpc"]
+  }
+}
+
+data "aws_subnets" "public" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.main.id]
+  }
+  filter {
+    name   = "tag:Tier"
+    values = ["public"]
+  }
+}
+
+data "aws_subnets" "private" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.main.id]
+  }
+  filter {
+    name   = "tag:Tier"
+    values = ["private"]
+  }
+}
+
+data "aws_ami" "amazon_linux_2023" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-x86_64"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
 
 resource "aws_security_group" "alb" {
   name        = "web-portal-alb-sg"
@@ -95,7 +93,7 @@ resource "aws_security_group" "alb" {
   }
 
   ingress {
-    description = "HTTP redirect from internet"
+    description = "HTTP from internet (redirect)"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
@@ -103,7 +101,7 @@ resource "aws_security_group" "alb" {
   }
 
   egress {
-    description = "Allow all outbound"
+    description = "All outbound traffic"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -129,7 +127,7 @@ resource "aws_security_group" "ec2_web" {
   }
 
   egress {
-    description = "Allow all outbound"
+    description = "All outbound traffic"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -140,10 +138,6 @@ resource "aws_security_group" "ec2_web" {
     Name = "web-portal-ec2-sg"
   })
 }
-
-###############################################################################
-# IAM Role & Instance Profile
-###############################################################################
 
 resource "aws_iam_role" "ec2_web_portal" {
   name = "ec2-web-portal-role"
@@ -171,7 +165,7 @@ resource "aws_iam_role_policy_attachment" "ec2_web_portal_ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-resource "aws_iam_role_policy_attachment" "ec2_web_portal_cw" {
+resource "aws_iam_role_policy_attachment" "ec2_web_portal_cloudwatch" {
   role       = aws_iam_role.ec2_web_portal.name
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
 }
@@ -185,30 +179,15 @@ resource "aws_iam_instance_profile" "ec2_web_portal" {
   })
 }
 
-###############################################################################
-# Launch Template
-###############################################################################
-
 resource "aws_launch_template" "web_portal" {
   name_prefix   = "web-portal-lt-"
-  image_id      = data.aws_ami.amazon_linux_2.id
+  image_id      = data.aws_ami.amazon_linux_2023.id
   instance_type = "t3.medium"
-
-  iam_instance_profile {
-    name = aws_iam_instance_profile.ec2_web_portal.name
-  }
 
   vpc_security_group_ids = [aws_security_group.ec2_web.id]
 
-  block_device_mappings {
-    device_name = "/dev/xvda"
-
-    ebs {
-      volume_size           = 30
-      volume_type           = "gp3"
-      encrypted             = true
-      delete_on_termination = true
-    }
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2_web_portal.name
   }
 
   monitoring {
@@ -219,29 +198,145 @@ resource "aws_launch_template" "web_portal" {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
     http_put_response_hop_limit = 1
+    instance_metadata_tags      = "enabled"
   }
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size           = 30
+      volume_type           = "gp3"
+      encrypted             = true
+      delete_on_termination = true
+    }
+  }
+
+  user_data = base64encode(<<-EOF
+    #!/bin/bash
+    yum update -y
+    yum install -y amazon-cloudwatch-agent
+    systemctl enable amazon-cloudwatch-agent
+    systemctl start amazon-cloudwatch-agent
+  EOF
+  )
 
   tag_specifications {
     resource_type = "instance"
-
     tags = merge(local.common_tags, {
-      Name = "web-portal-instance"
+      Name = "web-portal-ec2"
     })
   }
 
   tag_specifications {
     resource_type = "volume"
-
     tags = merge(local.common_tags, {
-      Name = "web-portal-volume"
+      Name = "web-portal-ec2-volume"
     })
   }
 
   tags = merge(local.common_tags, {
     Name = "web-portal-launch-template"
   })
+}
 
-  lifecycle {
-    create_before_destroy = true
+resource "aws_autoscaling_group" "web_portal" {
+  name                = "web-portal-asg"
+  desired_capacity    = 2
+  max_size            = 6
+  min_size            = 2
+  vpc_zone_identifier = data.aws_subnets.private.ids
+
+  launch_template {
+    id      = aws_launch_template.web_portal.id
+    version = "$Latest"
   }
+
+  health_check_type         = "ELB"
+  health_check_grace_period = 300
+
+  dynamic "tag" {
+    for_each = merge(local.common_tags, {
+      Name = "web-portal-asg"
+    })
+    content {
+      key                 = tag.key
+      value               = tag.value
+      propagate_at_launch = true
+    }
+  }
+}
+
+resource "aws_lb" "web_portal" {
+  name               = "web-portal-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb.id]
+  subnets            = data.aws_subnets.public.ids
+
+  enable_deletion_protection = true
+
+  tags = merge(local.common_tags, {
+    Name = "web-portal-alb"
+  })
+}
+
+resource "aws_lb_target_group" "web_portal" {
+  name     = "web-portal-tg"
+  port     = 8080
+  protocol = "HTTP"
+  vpc_id   = data.aws_vpc.main.id
+
+  health_check {
+    enabled             = true
+    healthy_threshold   = 3
+    unhealthy_threshold = 3
+    timeout             = 5
+    interval            = 30
+    path                = "/health"
+    matcher             = "200"
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "web-portal-tg"
+  })
+}
+
+resource "aws_lb_listener" "web_portal_https" {
+  load_balancer_arn = aws_lb.web_portal.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.web_portal.arn
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "web-portal-https-listener"
+  })
+}
+
+resource "aws_lb_listener" "web_portal_http_redirect" {
+  load_balancer_arn = aws_lb.web_portal.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type = "redirect"
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "web-portal-http-redirect-listener"
+  })
+}
+
+resource "aws_autoscaling_attachment" "web_portal" {
+  autoscaling_group_name = aws_autoscaling_group.web_portal.id
+  lb_target_group_arn    = aws_lb_target_group.web_portal.arn
 }
