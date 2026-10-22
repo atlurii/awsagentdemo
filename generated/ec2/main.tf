@@ -1,8 +1,7 @@
-```hcl
 # ./generated/ec2/main.tf
+# Generated Terraform configuration for EC2 web-portal infrastructure
 
 terraform {
-  required_version = ">= 1.0.0"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -11,91 +10,70 @@ terraform {
   }
 }
 
-# ---------------------------------------------------------------------------
-# Local values
-# ---------------------------------------------------------------------------
 locals {
   common_tags = {
-    Environment        = "production"
-    Application        = "web-portal"
-    Owner              = "it-operations-team"
-    CostCenter         = "IT-OPS-003"          # updated value
-    Project            = "digital-transformation"
-    ServiceLevel       = "critical"
-    BackupRequired     = "true"
-    MonitoringEnabled  = "true"
-    PatchGroup         = "monthly"
-    ComplianceRequired = "sox-gdpr"
-    DataClassification = "confidential"
-    BusinessUnit       = "healthcare-technology"
-    MaintenanceWindow  = "sunday-02:00-06:00"
-    DisasterRecovery   = "enabled"
-    SecurityGroup      = "dmz-web-tier"
-    AutoScaling        = "enabled"
-    LogRetention       = "90-days"
-    IncidentPriority   = "high"
-    ServiceDesk        = "servicenow-integration"
-    ChangeManagement   = "required"
+    Environment         = "production"
+    Application         = "web-portal"
+    Owner               = "it-operations-team"
+    CostCenter          = "IT-OPS-003"
+    Project             = "digital-transformation"
+    ServiceLevel        = "critical"
+    BackupRequired      = "true"
+    MonitoringEnabled   = "true"
+    PatchGroup          = "monthly"
+    ComplianceRequired  = "sox-gdpr"
+    DataClassification  = "confidential"
+    BusinessUnit        = "healthcare-technology"
+    MaintenanceWindow   = "sunday-02:00-06:00"
+    DisasterRecovery    = "enabled"
+    SecurityGroup       = "dmz-web-tier"
+    AutoScaling         = "enabled"
+    LogRetention        = "90-days"
+    IncidentPriority    = "high"
+    ServiceDesk         = "servicenow-integration"
+    ChangeManagement    = "required"
   }
 }
 
-# ---------------------------------------------------------------------------
-# Data sources – reference existing infrastructure instead of recreating it
-# ---------------------------------------------------------------------------
 data "aws_vpc" "main" {
-  tags = {
-    Environment = "production"
+  filter {
+    name   = "tag:Name"
+    values = ["main-vpc"]
   }
 }
 
 data "aws_subnets" "private" {
   filter {
+    name   = "tag:Tier"
+    values = ["private"]
+  }
+  filter {
     name   = "vpc-id"
     values = [data.aws_vpc.main.id]
-  }
-  tags = {
-    Tier = "private"
   }
 }
 
 data "aws_subnets" "public" {
   filter {
+    name   = "tag:Tier"
+    values = ["public"]
+  }
+  filter {
     name   = "vpc-id"
     values = [data.aws_vpc.main.id]
   }
-  tags = {
-    Tier = "public"
-  }
 }
 
-data "aws_ami" "amazon_linux_2023" {
+data "aws_ami" "amazon_linux_2" {
   most_recent = true
   owners      = ["amazon"]
 
   filter {
     name   = "name"
-    values = ["al2023-ami-*-x86_64"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
   }
 }
 
-data "aws_iam_instance_profile" "ec2_profile" {
-  name = "ec2-web-portal-instance-profile"
-}
-
-data "aws_sns_topic" "alerts" {
-  name = "production-alerts"
-}
-
-# ---------------------------------------------------------------------------
-# Security Groups
-# ---------------------------------------------------------------------------
-
-# ALB Security Group (DMZ / web-tier)
 resource "aws_security_group" "alb" {
   name        = "web-portal-alb-sg"
   description = "Security group for web-portal ALB – DMZ web tier"
@@ -110,7 +88,7 @@ resource "aws_security_group" "alb" {
   }
 
   ingress {
-    description = "HTTP redirect"
+    description = "HTTP from internet"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
@@ -118,7 +96,7 @@ resource "aws_security_group" "alb" {
   }
 
   egress {
-    description = "All outbound"
+    description = "All outbound traffic"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -130,7 +108,6 @@ resource "aws_security_group" "alb" {
   })
 }
 
-# EC2 Instance Security Group
 resource "aws_security_group" "ec2_web" {
   name        = "web-portal-ec2-sg"
   description = "Security group for web-portal EC2 instances"
@@ -144,16 +121,8 @@ resource "aws_security_group" "ec2_web" {
     security_groups = [aws_security_group.alb.id]
   }
 
-  ingress {
-    description     = "HTTPS from ALB only"
-    from_port       = 8443
-    to_port         = 8443
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
-  }
-
   egress {
-    description = "All outbound"
+    description = "All outbound traffic"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -165,9 +134,6 @@ resource "aws_security_group" "ec2_web" {
   })
 }
 
-# ---------------------------------------------------------------------------
-# IAM Role & Instance Profile (only if not pre-existing)
-# ---------------------------------------------------------------------------
 resource "aws_iam_role" "ec2_web_portal" {
   name = "ec2-web-portal-role"
 
@@ -189,12 +155,12 @@ resource "aws_iam_role" "ec2_web_portal" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "ssm" {
+resource "aws_iam_role_policy_attachment" "ec2_ssm" {
   role       = aws_iam_role.ec2_web_portal.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-resource "aws_iam_role_policy_attachment" "cloudwatch_agent" {
+resource "aws_iam_role_policy_attachment" "ec2_cloudwatch" {
   role       = aws_iam_role.ec2_web_portal.name
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
 }
@@ -208,12 +174,9 @@ resource "aws_iam_instance_profile" "ec2_web_portal" {
   })
 }
 
-# ---------------------------------------------------------------------------
-# Launch Template
-# ---------------------------------------------------------------------------
 resource "aws_launch_template" "web_portal" {
   name_prefix   = "web-portal-lt-"
-  image_id      = data.aws_ami.amazon_linux_2023.id
+  image_id      = data.aws_ami.amazon_linux_2.id
   instance_type = "t3.medium"
 
   iam_instance_profile {
@@ -223,29 +186,54 @@ resource "aws_launch_template" "web_portal" {
   network_interfaces {
     associate_public_ip_address = false
     security_groups             = [aws_security_group.ec2_web.id]
-    delete_on_termination       = true
-  }
-
-  block_device_mappings {
-    device_name = "/dev/xvda"
-    ebs {
-      volume_size           = 50
-      volume_type           = "gp3"
-      encrypted             = true
-      delete_on_termination = true
-    }
   }
 
   monitoring {
     enabled = true
   }
 
-  metadata_options {
-    http_endpoint               = "enabled"
-    http_tokens                 = "required" # IMDSv2 enforced
-    http_put_response_hop_limit = 1
-    instance_metadata_tags      = "enabled"
+  tag_specifications {
+    resource_type = "instance"
+    tags = merge(local.common_tags, {
+      Name = "web-portal-instance"
+    })
   }
 
-  user_data = base64encode(<<-EOF
-    #!/bin/
+  tag_specifications {
+    resource_type = "volume"
+    tags = merge(local.common_tags, {
+      Name = "web-portal-volume"
+    })
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "web-portal-launch-template"
+  })
+}
+
+resource "aws_autoscaling_group" "web_portal" {
+  name                = "web-portal-asg"
+  desired_capacity    = 2
+  max_size            = 4
+  min_size            = 1
+  vpc_zone_identifier = data.aws_subnets.private.ids
+
+  launch_template {
+    id      = aws_launch_template.web_portal.id
+    version = "$Latest"
+  }
+
+  health_check_type         = "ELB"
+  health_check_grace_period = 300
+
+  dynamic "tag" {
+    for_each = merge(local.common_tags, {
+      Name = "web-portal-asg"
+    })
+    content {
+      key                 = tag.key
+      value               = tag.value
+      propagate_at_launch = true
+    }
+  }
+}
